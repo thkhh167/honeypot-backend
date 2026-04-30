@@ -30,6 +30,16 @@ app.use(Detection);
 const url = process.env.MONGO_URL;
 const port = process.env.PORT || 3000;
 
+const mongoUri = process.env.MONGO_URL; // או השם שבחרת
+
+if (!mongoUri) {
+  console.error("❌ ERROR: MONGO_URL is not defined in environment variables!");
+} else {
+  mongoose.connect(mongoUri)
+    .then(() => console.log("✅ Connected to MongoDB Atlas"))
+    .catch(err => console.error("❌ MongoDB connection error:", err));
+}
+
 mongoose.connect(url)
   .then(() => console.log('DB Connected'))
   .catch(err => console.log(err));
