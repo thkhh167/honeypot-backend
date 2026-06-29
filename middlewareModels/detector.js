@@ -1,6 +1,7 @@
 import AttackLog from './AttackLog.js';
 import BlockedIP from './BlockedIP.js';
 
+// normalizing IP so I don't get duplicates from proxies / ngrok / render
 const normalizeIp = (req) => {
     let ip =
         req.headers['x-forwarded-for'] ||
@@ -10,6 +11,7 @@ const normalizeIp = (req) => {
     return ip.replace('::ffff:', '');
 };
 
+// extracting only string values so I can scan everything safely
 const extractStrings = (obj) => {
     const results = [];
 
@@ -31,6 +33,7 @@ const extractStrings = (obj) => {
     return results;
 };
 
+// simple attack detection rules (regex based)
 const attackPatterns = [
     /(\bunion\b.*\bselect\b|\bdrop\b|\binsert\b|\bupdate\b|--|#|'|\bor\b\s+\d+=\d+)/i,
     /(\$ne|\$gt|\$lt|\$or|\$in|\$exists|\$where)/i,
@@ -38,12 +41,14 @@ const attackPatterns = [
     /(\.\.\/|\.\.\\|\/etc\/passwd|boot\.ini)/i
 ];
 
+// checking if request contains any attack pattern
 const isAttack = (inputs) => {
     return inputs.some(input =>
         attackPatterns.some(pattern => pattern.test(input))
     );
 };
 
+// checking if IP is currently blocked (temp or permanent)
 const isCurrentlyBlocked = (record) => {
     if (!record) return false;
 
@@ -56,13 +61,14 @@ const isCurrentlyBlocked = (record) => {
     return false;
 };
 
+// main security middleware
 const securityMiddleware = async (req, res, next) => {
     try {
         const ip = normalizeIp(req);
 
+        // load or create IP record
         let record = await BlockedIP.findOne({ ip });
-        
-        const now = Date.now();
+
         if (!record) {
             record = await BlockedIP.create({
                 ip,
@@ -74,26 +80,35 @@ const securityMiddleware = async (req, res, next) => {
             });
         }
 
+        // if IP is already blocked → stop immediately
         if (isCurrentlyBlocked(record)) {
             return res.status(403).json({
-                error: 'Your IP is blocked'
+                error: 'Your IP is blocked by security system'
             });
         }
 
+        // building request snapshot for scanning
         const requestData = {
             query: req.query,
             body: req.body,
             params: req.params
         };
 
+        // extracting all string inputs
         const inputs = extractStrings(requestData);
 
-        const attack = isAttack(inputs);
+        // checking if request is malicious
+        const attackDetected = isAttack(inputs);
 
-        if (!attack) {
+        // if it's NOT an attack → continue normally
+        if (!attackDetected) {
             return next();
         }
 
+        // from here → request is malicious, so I block it immediately
+        const now = Date.now();
+
+        // log the attack before doing anything else
         await AttackLog.create({
             ip,
             method: req.method,
@@ -103,11 +118,14 @@ const securityMiddleware = async (req, res, next) => {
             createdAt: new Date()
         });
 
+        // update last attack time
         record.lastAttack = now;
 
+        // first stage: temporary ban system
         if (record.banPhase === 0) {
             record.strikes += 1;
 
+            // after 3 attacks → temporary ban for 10 minutes
             if (record.strikes >= 3) {
                 record.blockedUntil = now + 10 * 60 * 1000;
                 record.banPhase = 1;
@@ -116,10 +134,11 @@ const securityMiddleware = async (req, res, next) => {
             await record.save();
 
             return res.status(403).json({
-                error: 'Temporary blocked (10 min)'
+                error: 'Request blocked by security system'
             });
         }
 
+        // second stage: after temp ban, next attack = permanent ban
         if (record.banPhase === 1) {
             record.permanentlyBlocked = true;
             await record.save();
@@ -128,14 +147,11 @@ const securityMiddleware = async (req, res, next) => {
                 error: 'Permanently blocked'
             });
         }
-        return res.status(403).json({
-                error: 'Action Blocked By Security System'
-            });
 
-        next();
+        return next();
 
     } catch (err) {
-        console.error(err);
+        console.error('security middleware error:', err);
         return next();
     }
 };
