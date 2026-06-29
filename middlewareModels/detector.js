@@ -100,7 +100,7 @@ const securityMiddleware = async (req, res, next) => {
             path: req.path,
             payload: JSON.stringify(requestData),
             userAgent: req.headers['user-agent'],
-            createdAt: new Date().toLocaleString('he-IL')
+            createdAt: new Date()
         });
 
         record.lastAttack = now;
