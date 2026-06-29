@@ -154,7 +154,9 @@ const securityMiddleware = async (req, res, next) => {
 
     } catch (err) {
         console.error('security middleware error:', err);
-        return next();
+        return res.status(500).json({
+        error: err.message
+    });
     }
 };
 
