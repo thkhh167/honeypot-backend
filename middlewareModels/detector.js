@@ -1,12 +1,26 @@
 import AttackLog from './AttackLog.js';
 import BlockedIP from './BlockedIP.js';
 
-// extract all string values from request
+const ipCache = new Map();
+
+// normalizing the IP so I don’t get duplicates from proxies or ngrok
+const normalizeIp = (req) => {
+    let ip =
+        req.headers['x-forwarded-for'] ||
+        req.socket.remoteAddress;
+
+    ip = ip.split(',')[0].trim();
+    ip = ip.replace('::ffff:', '');
+
+    return ip;
+};
+
+// extracting only string values from the request so I can scan them
 const extractStrings = (obj) => {
-    let results = [];
+    const results = [];
 
     const walk = (o) => {
-        if (!o) return;
+        if (!o || typeof o !== 'object') return;
 
         for (const key in o) {
             const value = o[key];
@@ -23,20 +37,39 @@ const extractStrings = (obj) => {
     return results;
 };
 
-// check if IP is blocked
-const isIpBlocked = (ipRecord) => {
-    if (!ipRecord) return false;
+// attack patterns I check against every request input
+const attackSignatures = [
+    { name: 'SQL Injection', weight: 5, regex: /(\bunion\b.*\bselect\b|\bdrop\b|\binsert\b|\bupdate\b|--|#|'|\bor\b\s+\d+=\d+)/i },
+    { name: 'NoSQL Injection', weight: 5, regex: /(\$ne|\$gt|\$lt|\$or|\$in|\$exists|\$where)/i },
+    { name: 'XSS', weight: 5, regex: /(<script|<\/script>|onerror=|onload=|javascript:|alert\(|<img)/i },
+    { name: 'Path Traversal', weight: 4, regex: /(\.\.\/|\.\.\\|\/etc\/passwd|boot\.ini)/i }
+];
 
-    if (ipRecord.permanentlyBlocked) return true;
-
-    if (ipRecord.blockedUntil && ipRecord.blockedUntil > Date.now()) {
-        return true;
+// checking if an IP is already blocked, with cache to avoid DB spam
+const isBlocked = async (ip) => {
+    if (ipCache.has(ip)) {
+        return ipCache.get(ip);
     }
 
-    return false;
+    const record = await BlockedIP.findOne({ ip });
+
+    if (!record) {
+        ipCache.set(ip, false);
+        return false;
+    }
+
+    const now = Date.now();
+
+    const blocked =
+        record.permanentlyBlocked ||
+        (record.blockedUntil && record.blockedUntil.getTime() > now);
+
+    ipCache.set(ip, blocked);
+
+    return blocked;
 };
 
-// get or create IP record in MongoDB
+// getting or creating an IP record only when I actually need to store something
 const getOrCreateIpRecord = async (ip) => {
     let record = await BlockedIP.findOne({ ip });
 
@@ -45,59 +78,31 @@ const getOrCreateIpRecord = async (ip) => {
             ip,
             strikes: 0,
             blockedUntil: null,
-            permanentlyBlocked: false
+            permanentlyBlocked: false,
+            lastAttack: null
         });
     }
 
     return record;
 };
 
-// detection rules
-const attackSignatures = [
-    {
-        name: 'SQL Injection',
-        weight: 5,
-        regex: /(\bunion\b.*\bselect\b|\bdrop\b|\binsert\b|\bupdate\b|--|#|'|\bor\b\s+\d+=\d+)/i
-    },
-    {
-        name: 'NoSQL Injection',
-        weight: 5,
-        regex: /(\$ne|\$gt|\$lt|\$or|\$in|\$exists|\$where)/i
-    },
-    {
-        name: 'XSS',
-        weight: 5,
-        regex: /(<script|<\/script>|onerror=|onload=|javascript:|alert\(|<img)/i
-    },
-    {
-        name: 'Path Traversal',
-        weight: 4,
-        regex: /(\.\.\/|\.\.\\|\/etc\/passwd|boot\.ini)/i
-    }
-];
-
+// main security middleware
 const securityMiddleware = async (req, res, next) => {
     try {
-        // get client IP (works behind proxy like Render)
-        const clientIp =
-            req.headers['x-forwarded-for']
-                ? req.headers['x-forwarded-for'].split(',')[0]
-                : req.socket.remoteAddress;
+        const clientIp = normalizeIp(req);
 
-        // load IP from DB
-        const ipRecord = await getOrCreateIpRecord(clientIp);
+        // first check if the IP is already blocked before doing any heavy work
+        const alreadyBlocked = await isBlocked(clientIp);
 
-        // if blocked → stop immediately
-        if (isIpBlocked(ipRecord)) {
-            console.log(
-                `🚨IP BLOCKED | IP: ${clientIp}}`
-            );
+        if (alreadyBlocked) {
+            console.log(`blocked request from ip ${clientIp}`);
+
             return res.status(403).json({
                 error: 'Your IP is blocked by security system'
             });
         }
 
-        // build request snapshot
+        // building request snapshot for scanning
         const requestData = {
             query: req.query,
             body: req.body,
@@ -109,56 +114,63 @@ const securityMiddleware = async (req, res, next) => {
             url: req.url
         };
 
-        // extract all strings
+        // extracting all string inputs from request
         const inputs = extractStrings(requestData);
-        console.log("IP:", clientIp);
-        console.log("STRIKES BEFORE:", ipRecord.strikes);
-        let score = 0;
-        let detectedTypes = [];
 
-        // scan inputs
+        let score = 0;
+        const detectedTypes = new Set();
+
+        // scanning all inputs against attack signatures
         for (const input of inputs) {
             for (const sig of attackSignatures) {
                 if (sig.regex.test(input)) {
                     score += sig.weight;
-                    detectedTypes.push(sig.name);
+                    detectedTypes.add(sig.name);
                 }
             }
         }
 
-        detectedTypes = [...new Set(detectedTypes)];
+        const typesArray = [...detectedTypes];
 
         const BLOCK_THRESHOLD = 5;
 
-        // if attack detected
+        // if nothing suspicious was found I don’t touch the database at all
+        if (score === 0) {
+            return next();
+        }
+
+        // only now I interact with the database
+        const ipRecord = await getOrCreateIpRecord(clientIp);
+
+        ipRecord.lastAttack = new Date();
+
+        // if score is high enough I treat it as an attack
         if (score >= BLOCK_THRESHOLD) {
-
-            // increase strike
             ipRecord.strikes += 1;
-            ipRecord.lastAttack = new Date();
 
-            // temporary ban after 3 strikes
+            // temporary block after repeated strikes
             if (ipRecord.strikes >= 3 && ipRecord.strikes < 5) {
                 ipRecord.blockedUntil = new Date(Date.now() + 10 * 60 * 1000);
             }
 
-            // permanent ban after 5 strikes
+            // permanent block after too many strikes
             if (ipRecord.strikes >= 5) {
                 ipRecord.permanentlyBlocked = true;
             }
 
             await ipRecord.save();
 
+            ipCache.set(clientIp, true);
+
             console.log(
-                `🚨 BLOCKED | IP: ${clientIp} | Score: ${score} | Types: ${detectedTypes.join(', ')}`
+                `blocked attack ip ${clientIp} score ${score} types ${typesArray.join(', ')}`
             );
 
-            // log attack
             await AttackLog.create({
                 ip: clientIp,
                 method: req.method,
                 path: req.path,
-                attackType: detectedTypes.join(', '),
+                attackType: typesArray.join(', '),
                 payload: JSON.stringify(requestData),
                 userAgent: req.headers['user-agent'],
                 score
@@ -169,27 +181,26 @@ const securityMiddleware = async (req, res, next) => {
             });
         }
 
-        // suspicious but not blocked
-        if (score > 0) {
-            console.log(
-                `⚠️ SUSPICIOUS | IP: ${clientIp} | Score: ${score} | Types: ${detectedTypes.join(', ')}`
-            );
+        // suspicious request but not enough to block
+        console.log(
+            `suspicious request ip ${clientIp} score ${score} types ${typesArray.join(', ')}`
+        );
 
-            await AttackLog.create({
-                ip: clientIp,
-                method: req.method,
-                path: req.path,
-                attackType: detectedTypes.join(', '),
-                payload: JSON.stringify(requestData),
-                userAgent: req.headers['user-agent'],
-                score
-            });
-        }
-        console.log("STRIKES AFTER:", ipRecord.strikes);
+        await AttackLog.create({
+            ip: clientIp,
+            method: req.method,
+            path: req.path,
+            attackType: typesArray.join(', '),
+            payload: JSON.stringify(requestData),
+            userAgent: req.headers['user-agent'],
+            score
+        });
 
-        next();
+        return next();
+
     } catch (err) {
-        next();
+        console.error('security middleware error', err);
+        return next();
     }
 };
 
