@@ -98,7 +98,9 @@ app.get('/user/:id', async (req, res) => {
     const user = await User.findOne({ id: req.params.id });
     if (!user) return res.status(404).send();
     const actions = await Transaction.find({ $or: [{ senderId: req.params.id }, { receiverId: req.params.id }] }).sort({ date: -1 });
-    const history = await Promise.all(actions.map(async (item) => {
+
+    const history = await Promise.all(actions.map(async (item) => 
+      {
       const otherId = item.senderId === req.params.id ? item.receiverId : item.senderId;
       const otherUser = await User.findOne({ id: otherId });
       return {

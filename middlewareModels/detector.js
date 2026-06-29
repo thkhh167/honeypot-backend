@@ -10,7 +10,6 @@ const normalizeIp = (req) => {
     return ip.replace('::ffff:', '');
 };
 
-// extracting only string values from request
 const extractStrings = (obj) => {
     const results = [];
 
@@ -32,7 +31,6 @@ const extractStrings = (obj) => {
     return results;
 };
 
-// simple attack detection (boolean only)
 const attackPatterns = [
     /(\bunion\b.*\bselect\b|\bdrop\b|\binsert\b|\bupdate\b|--|#|'|\bor\b\s+\d+=\d+)/i,
     /(\$ne|\$gt|\$lt|\$or|\$in|\$exists|\$where)/i,
@@ -51,7 +49,7 @@ const isCurrentlyBlocked = (record) => {
 
     if (record.permanentlyBlocked) return true;
 
-    if (record.blockedUntil && record.blockedUntil.getTime() > Date.now()) {
+    if (record.blockedUntil && record.blockedUntil > Date.now()) {
         return true;
     }
 
@@ -66,7 +64,6 @@ const securityMiddleware = async (req, res, next) => {
 
         const now = Date.now();
 
-        // create record if not exists
         if (!record) {
             record = await BlockedIP.create({
                 ip,
@@ -78,7 +75,6 @@ const securityMiddleware = async (req, res, next) => {
             });
         }
 
-        // check if currently blocked (temp or perm)
         if (isCurrentlyBlocked(record)) {
             return res.status(403).json({
                 error: 'Your IP is blocked'
@@ -95,28 +91,26 @@ const securityMiddleware = async (req, res, next) => {
 
         const attack = isAttack(inputs);
 
-        // normal request → do nothing
         if (!attack) {
             return next();
         }
 
-        // log attack
         await AttackLog.create({
             ip,
             method: req.method,
             path: req.path,
             payload: JSON.stringify(requestData),
-            userAgent: req.headers['user-agent']
+            userAgent: req.headers['user-agent'],
+            createdAt: now
         });
 
-        record.lastAttack = new Date();
+        record.lastAttack = now;
 
-        // CASE 1: first 3 attacks → temporary ban
         if (record.banPhase === 0) {
             record.strikes += 1;
 
             if (record.strikes >= 3) {
-                record.blockedUntil = new Date(Date.now() + 10 * 60 * 1000);
+                record.blockedUntil = now + 10 * 60 * 1000;
                 record.banPhase = 1;
             }
 
@@ -127,7 +121,6 @@ const securityMiddleware = async (req, res, next) => {
             });
         }
 
-        // CASE 2: after temp ban expired → next attack = permanent ban
         if (record.banPhase === 1) {
             record.permanentlyBlocked = true;
             await record.save();
