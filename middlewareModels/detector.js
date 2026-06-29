@@ -89,6 +89,9 @@ const securityMiddleware = async (req, res, next) => {
 
         // if blocked → stop immediately
         if (isIpBlocked(ipRecord)) {
+            console.log(
+                `🚨IP BLOCKED | IP: ${clientIp}}`
+            );
             return res.status(403).json({
                 error: 'Your IP is blocked by security system'
             });
