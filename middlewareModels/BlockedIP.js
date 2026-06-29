@@ -9,7 +9,10 @@ const blockedIpSchema = new mongoose.Schema({
 
     permanentlyBlocked: { type: Boolean, default: false },
 
-    lastAttack: { type: Date, default: Date.now }
+    lastAttack: { type: Date, default: null },
+
+
+    banPhase: { type: Number, default: 0 }
 });
 
 export default mongoose.model('BlockedIP', blockedIpSchema);

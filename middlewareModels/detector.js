@@ -69,6 +69,7 @@ const securityMiddleware = async (req, res, next) => {
         // load or create IP record
         let record = await BlockedIP.findOne({ ip });
 
+        const now = new Date();
         if (!record) {
             record = await BlockedIP.create({
                 ip,
@@ -106,7 +107,6 @@ const securityMiddleware = async (req, res, next) => {
         }
 
         // from here → request is malicious, so I block it immediately
-        const now = Date.now();
         console.log(
     `🚨 BLOCKED | IP: ${ip} | PATH: ${req.path}`);
         // log the attack before doing anything else
@@ -116,7 +116,7 @@ const securityMiddleware = async (req, res, next) => {
             path: req.path,
             payload: JSON.stringify(requestData),
             userAgent: req.headers['user-agent'],
-            createdAt: new Date()
+            createdAt: now
         });
 
         // update last attack time
