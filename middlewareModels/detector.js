@@ -79,6 +79,8 @@ const attackSignatures = [
 const securityMiddleware = async (req, res, next) => {
     try {
         // get client IP (works behind proxy like Render)
+        console.log("IP:", clientIp);
+        console.log("STRIKES BEFORE:", ipRecord.strikes);
         const clientIp =
             req.headers['x-forwarded-for']
                 ? req.headers['x-forwarded-for'].split(',')[0]
@@ -181,6 +183,7 @@ const securityMiddleware = async (req, res, next) => {
                 score
             });
         }
+        console.log("STRIKES AFTER:", ipRecord.strikes);
 
         next();
     } catch (err) {
