@@ -128,8 +128,11 @@ const securityMiddleware = async (req, res, next) => {
                 error: 'Permanently blocked'
             });
         }
+        return res.status(403).json({
+                error: 'Action Blocked By Security System'
+            });
 
-        return next();
+        next();
 
     } catch (err) {
         console.error(err);
