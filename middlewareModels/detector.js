@@ -62,8 +62,6 @@ const securityMiddleware = async (req, res, next) => {
 
         let record = await BlockedIP.findOne({ ip });
 
-        const now = Date.now();
-
         if (!record) {
             record = await BlockedIP.create({
                 ip,
@@ -101,7 +99,7 @@ const securityMiddleware = async (req, res, next) => {
             path: req.path,
             payload: JSON.stringify(requestData),
             userAgent: req.headers['user-agent'],
-            createdAt: now
+            createdAt: new Date().toLocaleString('he-IL')
         });
 
         record.lastAttack = now;
