@@ -53,7 +53,8 @@ const isCurrentlyBlocked = (record) => {
     if (!record) return false;
 
     if (record.permanentlyBlocked) return true;
-
+    console.log('Blocked until:', record.blockedUntil, 'Now:', Date.now());
+    console.log(record.blockedUntil);
     if (record.blockedUntil && record.blockedUntil > Date.now()) {
         return true;
     }
@@ -130,6 +131,9 @@ const securityMiddleware = async (req, res, next) => {
             if (record.strikes >= 3) {
                 record.blockedUntil = now + 10 * 60 * 1000;
                 record.banPhase = 1;
+                return res.status(403).json({
+                error: 'Your IP is temporarily blocked for 10 minutes due to multiple attacks'
+            });
             }
 
             await record.save();
