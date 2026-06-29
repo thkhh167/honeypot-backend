@@ -61,7 +61,8 @@ const securityMiddleware = async (req, res, next) => {
         const ip = normalizeIp(req);
 
         let record = await BlockedIP.findOne({ ip });
-
+        
+        const now = Date.now();
         if (!record) {
             record = await BlockedIP.create({
                 ip,
