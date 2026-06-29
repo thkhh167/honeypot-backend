@@ -1,52 +1,133 @@
 import AttackLog from './AttackLog.js';
 
+const extractStrings = (obj) => {
+    let results = [];
+
+    const walk = (o) => {
+        if (!o) return;
+
+        for (const key in o) {
+            const value = o[key];
+
+            if (typeof value === 'string') {
+                results.push(value);
+            } else if (typeof value === 'object') {
+                walk(value);
+            }
+        }
+    };
+
+    walk(obj);
+    return results;
+};
+
+const patterns = [
+    {
+        name: 'SQL Injection',
+        weight: 5,
+        regex: /(\bunion\b.*\bselect\b|\bdrop\b|\binsert\b|\bupdate\b|--|#|'|\bor\b\s+\d+=\d+)/i
+    },
+    {
+        name: 'NoSQL Injection',
+        weight: 5,
+        regex: /(\$ne|\$gt|\$lt|\$or|\$in|\$exists|\$where)/i
+    },
+    {
+        name: 'XSS',
+        weight: 5,
+        regex: /(<script|<\/script>|onerror=|onload=|javascript:|alert\(|<img)/i
+    },
+    {
+        name: 'Path Traversal',
+        weight: 4,
+        regex: /(\.\.\/|\.\.\\|\/etc\/passwd|boot\.ini)/i
+    }
+];
+
 const detectionEngine = async (req, res, next) => {
     try {
-        const clientIp = req.headers['x-forwarded-for'] 
-    ? req.headers['x-forwarded-for'].split(',')[0]
-    : req.socket.remoteAddress;
+        //Getting the client IP address
+        const clientIp =
+            req.headers['x-forwarded-for']
+                ? req.headers['x-forwarded-for'].split(',')[0]
+                : req.socket.remoteAddress;
 
-        const dataToScan = JSON.stringify({
+        //Raw data from the request
+        const rawData = {
             query: req.query,
             body: req.body,
-            url: req.url,
+            params: req.params,
             headers: {
-                "user-agent": req.headers['user-agent'],
-                "referer": req.headers['referer']
-            }
-        });
+                'user-agent': req.headers['user-agent'],
+                referer: req.headers['referer']
+            },
+            url: req.url
+        };
 
-        const signatures = [
-            { name: 'SQL Injection', pattern: /('|--|#|\bOR\b|\bSELECT\b|\bUNION\b|\bDROP\b|\bUPDATE\b)/i },
-            { name: 'NoSQL Injection', pattern: /(\$gt|\$lt|\$ne|\$eq|\$in|\$nin|\$exists|\$where)/i },
-            { name: 'XSS', pattern: /(<script|alert\(|<img|onerror=|javascript:|eval\(|onload=)/i },
-            { name: 'Path Traversal', pattern: /(\.\.\/|\.\.\\|etc\/passwd|boot\.ini)/i }
-        ];
+        //Taking all the strings from the request data
+        const inputs = extractStrings(rawData);
 
-        let detectedAttack = null;
-        for (let sig of signatures) {
-            if (sig.pattern.test(dataToScan)) {
-                detectedAttack = sig.name;
-                break; 
+        let score = 0;
+        let detectedTypes = [];
+
+        //Checking each input against the patterns
+        for (const input of inputs) {
+            for (const pattern of patterns) {
+                if (pattern.regex.test(input)) {
+                    score += pattern.weight;
+                    detectedTypes.push(pattern.name);
+                }
             }
         }
 
-        if (detectedAttack) {
-            console.log(`⚠️ Attack Detected! : ${detectedAttack} | IP: ${clientIp} | Path: ${req.path}`);
+        //Remove duplicates from detectedTypes
+        detectedTypes = [...new Set(detectedTypes)];
+
+        //
+        const BLOCK_THRESHOLD = 5;
+
+        if (score >= BLOCK_THRESHOLD) {
+            console.log(
+                `🚨 BLOCKED | IP: ${clientIp} | Score: ${score} | Types: ${detectedTypes.join(', ')}`
+            );
+
+            //Logging the attack to the database
+            await AttackLog.create({
+                ip: clientIp,
+                method: req.method,
+                path: req.path,
+                attackType: detectedTypes.join(', '),
+                payload: JSON.stringify(rawData),
+                userAgent: req.headers['user-agent'],
+                score
+            });
+
+            //Block of the request
+            return res.status(403).json({
+                error: 'Request blocked by security system'
+            });
+        }
+
+        // לוג התקפה חשודה (אבל לא חסומה)
+        if (score > 0) {
+            console.log(
+                `⚠️ Suspicious | IP: ${clientIp} | Score: ${score} | Types: ${detectedTypes.join(', ')}`
+            );
 
             await AttackLog.create({
                 ip: clientIp,
                 method: req.method,
                 path: req.path,
-                attackType: detectedAttack,
-                payload: dataToScan,
-                userAgent: req.headers['user-agent']
+                attackType: detectedTypes.join(', '),
+                payload: JSON.stringify(rawData),
+                userAgent: req.headers['user-agent'],
+                score
             });
         }
 
-        next(); 
+        next();
     } catch (err) {
-        next(); 
+        next();
     }
 };
 
