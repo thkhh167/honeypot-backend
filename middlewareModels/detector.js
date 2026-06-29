@@ -107,7 +107,8 @@ const securityMiddleware = async (req, res, next) => {
 
         // from here → request is malicious, so I block it immediately
         const now = Date.now();
-
+        console.log(
+        `🚨 BLOCKED | IP: ${ip} | PATH: ${req.path} | TYPES: ${types.join(', ')}`);
         // log the attack before doing anything else
         await AttackLog.create({
             ip,
